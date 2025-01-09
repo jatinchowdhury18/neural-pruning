@@ -135,9 +135,9 @@ auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& hidden_s
 
 int main()
 {
-    std::cout << "Neural pruning test\n";
+    std::cout << "LSTM pruning test\n";
 
-    const auto model_path { std::string { ROOT_DIR } + "fuzz_2.json" };
+    const auto model_path { std::string { MODELS_DIR } + "/fuzz_2.json" };
     std::cout << "Testing model: " << model_path << std::endl;
     nlohmann::json model_json {};
     std::ifstream { model_path, std::ifstream::binary } >> model_json;
@@ -149,11 +149,16 @@ int main()
     auto& state_dict = model_json.at ("state_dict");
     auto ground_truth_output = run_model (state_dict, hidden_size);
 
+    static constexpr auto pruning_error_threshold = 0.05;
+    std::cout << "Pruning error threshold: " << pruning_error_threshold << '\n';
     while (hidden_size > 4)
     {
         const auto [channel_to_prune, prune_error] = model_prune (state_dict, ground_truth_output, hidden_size);
-        if (prune_error > 0.05f)
+        if (prune_error > pruning_error_threshold)
+        {
+            std::cout << "Pruning error greater than threshold...\n\n";
             break;
+        }
         ground_truth_output = prune_channel (state_dict, channel_to_prune, hidden_size, ground_truth_output);
     }
 

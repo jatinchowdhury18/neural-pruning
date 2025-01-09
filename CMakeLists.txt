@@ -2,9 +2,15 @@ cmake_minimum_required(VERSION 3.21)
 project(neural_pruning)
 
 set(CMAKE_CXX_STANDARD 20)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-add_subdirectory(../RTNeural RTNeural)
+include(CPM)
+CPMAddPackage(
+    NAME RTNeural
+    GIT_REPOSITORY https://github.com/jatinchowdhury18/RTNeural
+    GIT_TAG main
+    OPTIONS "RTNEURAL_XSIMD ON"
+)
 
-add_executable(neural_pruning_test neural_pruning_test.cpp)
-target_link_libraries(neural_pruning_test PRIVATE RTNeural)
-target_compile_definitions(neural_pruning_test PRIVATE ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/")
+add_subdirectory(proto)
+add_subdirectory(plugin)
