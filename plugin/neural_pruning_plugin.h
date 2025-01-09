@@ -1,7 +1,7 @@
 #pragma once
 
 #include <chowdsp_plugin_base/chowdsp_plugin_base.h>
-#include <RTNeural/RTNeural.h>
+#include "lstm_model.h"
 
 struct Params : chowdsp::ParamHolder
 {
@@ -18,36 +18,6 @@ struct Params : chowdsp::ParamHolder
 };
 
 using State = chowdsp::PluginStateImpl<Params>;
-
-struct LSTM_Model
-{
-    static constexpr int input_size = 2;
-    static constexpr int hidden_size = 24;
-
-    using Model = RTNeural::ModelT<float,
-                               input_size,
-                               1,
-                               RTNeural::LSTMLayerT<float, input_size, hidden_size>,
-                               RTNeural::DenseT<float, hidden_size, 1>>;
-    Model model {};
-
-    void load_model (const nlohmann::json& model_json)
-    {
-        const auto& state_dict = model_json.at ("state_dict");
-        RTNeural::torch_helpers::loadLSTM<float> (state_dict, "rec.", model.get<0>());
-        RTNeural::torch_helpers::loadDense<float> (state_dict, "lin.", model.get<1>());
-    }
-
-    void process (std::span<float> data, float param)
-    {
-        alignas (16) float input[4] { 0.0f, param };
-        for (auto& x : data)
-        {
-            input[0] = x;
-            x += model.forward (input);
-        }
-    }
-};
 
 class Neural_Pruning_Plugin : public chowdsp::PluginBase<State>
 {

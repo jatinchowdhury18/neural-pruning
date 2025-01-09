@@ -54,6 +54,8 @@ include(SourceFileGroup)
 setup_source_group(neural_pruning_plugin PLUGIN_SRCS SOURCES
     neural_pruning_plugin.h
     neural_pruning_plugin.cpp
+    lstm_model.h
+    lstm_model.cpp
 )
 
 file(GLOB_RECURSE juce_module_sources CONFIGURE_DEPENDS

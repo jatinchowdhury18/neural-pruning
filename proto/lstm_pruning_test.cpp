@@ -29,7 +29,7 @@ auto get_model (int hidden_size)
 auto get_test_data()
 {
     std::mt19937 gen { 0x1234 }; // Fixed random seed so we get the same data every time
-    std::uniform_real_distribution<> dist { -1.0f, 1.0f };
+    std::uniform_real_distribution<float> dist { -1.0f, 1.0f };
     std::vector<float> data {};
     data.resize (N);
     for (int n = 0; n < N; ++n)

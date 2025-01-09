@@ -10,6 +10,8 @@ Neural_Pruning_Plugin::Neural_Pruning_Plugin()
     nlohmann::json model_json {};
     std::ifstream { model_path, std::ifstream::binary } >> model_json;
     lstm_model.load_model (model_json);
+
+    juce::Timer::callAfterDelay (10'000, [this] { lstm_model.prune_model(); });
 }
 
 void Neural_Pruning_Plugin::prepareToPlay (double sample_rate,
