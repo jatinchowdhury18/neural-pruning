@@ -38,7 +38,7 @@ void LSTM_Model::load_model (const nlohmann::json& state_dict, int hidden_size)
         {
             if (i == hidden_size)
             {
-                std::cout << "Loading model with hidden size: " << hidden_size << '\n';
+                chowdsp::log ("Loading model with hidden size {}", hidden_size);
                 model_variant.emplace<Model<i>>();
             }
         },
@@ -86,7 +86,7 @@ static auto get_test_data()
     std::uniform_real_distribution<float> dist { -1.0f, 1.0f };
     std::vector<float> data {};
     data.resize (8192);
-    for (int n = 0; n < data.size(); ++n)
+    for (size_t n = 0; n < data.size(); ++n)
         data[n] = dist (gen);
     return data;
 }
@@ -94,7 +94,6 @@ static auto get_test_data()
 static auto run_model (const nlohmann::json& state_dict, int hidden_size)
 {
     auto model = get_model (hidden_size);
-    // Model_Type model {};
     RTNeural::torch_helpers::loadLSTM<float> (state_dict, "rec.", *dynamic_cast<RTNeural::LSTMLayer<float>*> (model->layers[0]));
     RTNeural::torch_helpers::loadDense<float> (state_dict, "lin.", *dynamic_cast<RTNeural::Dense<float>*> (model->layers[1]));
 
@@ -112,7 +111,7 @@ static auto run_model (const nlohmann::json& state_dict, int hidden_size)
 static auto compute_rms_error (std::span<const float> x, std::span<const float> y)
 {
     auto square_error_accum = 0.0f;
-    for (int n = 0; n < x.size(); ++n)
+    for (size_t n = 0; n < x.size(); ++n)
     {
         const auto sample_error = x[n] - y[n];
         square_error_accum += sample_error * sample_error;
@@ -128,7 +127,7 @@ static auto test_channel_prune (nlohmann::json state_dict_prune,
                                 bool verbose = false)
 {
     if (verbose)
-        std::cout << "Pruning dense channel " << channel_to_prune << "... ";
+        chowdsp::log ("Pruning dense channel {}...", channel_to_prune);
 
     state_dict_prune["lin.weight"][0][channel_to_prune] = 0.0f;
     for (int i = 3; i >= 0; i--)
@@ -148,7 +147,7 @@ static auto test_channel_prune (nlohmann::json state_dict_prune,
 
     const auto rms_error = compute_rms_error (test_output, ground_truth_output);
     if (verbose)
-        std::cout << "RMS Error: " << rms_error << '\n';
+        chowdsp::log ("RMS Error: {}", rms_error);
     return rms_error;
 }
 
@@ -162,13 +161,13 @@ static auto model_prune (nlohmann::json& state_dict,
 
     const auto min_iter = std::min_element (error_vals.begin(), error_vals.end());
     const auto min_channel = std::distance (error_vals.begin(), min_iter);
-    std::cout << "Best channel to prune: " << min_channel << ", RMS Error: " << *min_iter << '\n';
+    chowdsp::log ("Best channel to prune: {}, RMS Error: {}", min_channel, *min_iter);
     return std::make_tuple (min_channel, *min_iter);
 }
 
 static auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& hidden_size, std::span<const float> ground_truth_output)
 {
-    std::cout << "Pruning channel: " << prune_channel << "... ";
+    chowdsp::log ("Pruning channel: {}...", prune_channel);
     state_dict["lin.weight"][0].erase (prune_channel);
     for (int i = 3; i >= 0; i--)
     {
@@ -184,7 +183,7 @@ static auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& h
     hidden_size--;
     const auto prune_output = run_model (state_dict, hidden_size);
     const auto prune_rms_error = compute_rms_error (ground_truth_output, prune_output);
-    std::cout << "RMS Error: " << prune_rms_error << "\n\n";
+    chowdsp::log ("RMS Error: {}\n", prune_rms_error);
 
     return prune_output;
 }
@@ -195,14 +194,14 @@ static auto prune_model (nlohmann::json state_dict, int hidden_size)
 
     static constexpr auto hidden_size_threshold = 4;
     static constexpr auto pruning_error_threshold = 0.05;
-    std::cout << "Pruning error threshold: " << pruning_error_threshold << '\n';
-    std::cout << "Pruning hidden size threshold: " << hidden_size_threshold << '\n';
+    chowdsp::log ("Pruning error threshold: {}", pruning_error_threshold);
+    chowdsp::log ("Pruning hidden size threshold: {}", hidden_size_threshold);
     while (hidden_size > hidden_size_threshold)
     {
         const auto [channel_to_prune, prune_error] = model_prune (state_dict, ground_truth_output, hidden_size);
         if (prune_error > pruning_error_threshold)
         {
-            std::cout << "Pruning error greater than threshold...\n\n";
+            chowdsp::log ("Pruning error greater than threshold...\n");
             break;
         }
         ground_truth_output = prune_channel (state_dict, channel_to_prune, hidden_size, ground_truth_output);
@@ -213,7 +212,10 @@ static auto prune_model (nlohmann::json state_dict, int hidden_size)
 
 void LSTM_Model::prune_model()
 {
+    chowdsp::log ("Pruning model...");
     const auto [pruned_state_dict, pruned_hidden_size] = ::prune_model (model_json_original["state_dict"],
                                                                         model_json_original["model_data"]["hidden_size"].get<int>());
+    chowdsp::log ("Finished pruning model...");
+
     load_model (pruned_state_dict, pruned_hidden_size);
 }

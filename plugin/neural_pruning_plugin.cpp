@@ -3,6 +3,7 @@
 #include <chowdsp_math/chowdsp_math.h>
 
 #include "neural_pruning_plugin.h"
+#include "plugin_editor.h"
 
 Neural_Pruning_Plugin::Neural_Pruning_Plugin()
 {
@@ -11,13 +12,14 @@ Neural_Pruning_Plugin::Neural_Pruning_Plugin()
     std::ifstream { model_path, std::ifstream::binary } >> model_json;
     lstm_model.load_model (model_json);
 
-    juce::Timer::callAfterDelay (10'000, [this] { lstm_model.prune_model(); });
+    juce::Timer::callAfterDelay (5'000, [this] { lstm_model.prune_model(); });
 }
 
 void Neural_Pruning_Plugin::prepareToPlay (double sample_rate,
                                            int samples_per_block)
 {
-    juce::ignoreUnused (sample_rate, samples_per_block);
+    dc_blocker.prepare ({ sample_rate, static_cast<uint32_t> (samples_per_block), 1 });
+    dc_blocker.setCutoffFrequency (10.0f);
 }
 
 void Neural_Pruning_Plugin::releaseResources()
@@ -30,7 +32,8 @@ void Neural_Pruning_Plugin::processAudioBlock (juce::AudioBuffer<float>& buffer)
     chowdsp::BufferMath::sumToMono (buffer, mono_buffer);
 
     const auto param = state.params.gain->getCurrentValue();
-    lstm_model.process (mono_buffer.getWriteSpan (0), param);
+    // lstm_model.process (mono_buffer.getWriteSpan (0), param);
+    dc_blocker.processBlock (mono_buffer);
 
     for (int ch = 1; ch < buffer.getNumChannels(); ++ch)
         chowdsp::BufferMath::copyBufferChannels (mono_buffer, buffer, 0, ch);
@@ -38,7 +41,7 @@ void Neural_Pruning_Plugin::processAudioBlock (juce::AudioBuffer<float>& buffer)
 
 juce::AudioProcessorEditor* Neural_Pruning_Plugin::createEditor()
 {
-    return new chowdsp::ParametersViewEditor { *this };
+    return new Plugin_Editor { *this };
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

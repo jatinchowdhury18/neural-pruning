@@ -1,7 +1,10 @@
 #pragma once
 
 #include <chowdsp_plugin_base/chowdsp_plugin_base.h>
+#include <chowdsp_filters/chowdsp_filters.h>
+
 #include "lstm_model.h"
+#include "console_logger.h"
 
 struct Params : chowdsp::ParamHolder
 {
@@ -30,8 +33,12 @@ public:
 
     juce::AudioProcessorEditor* createEditor() override;
 
+    Console_Logger logger {};
+
 private:
     LSTM_Model lstm_model {};
+
+    chowdsp::OnePoleSVF<float, chowdsp::OnePoleSVFType::Highpass> dc_blocker;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Neural_Pruning_Plugin)
 };

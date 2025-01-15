@@ -37,10 +37,13 @@ target_compile_definitions(neural_pruning_plugin PUBLIC
 target_link_libraries(neural_pruning_plugin
     PRIVATE
         juce::juce_audio_utils
+        juce::juce_dsp
+        chowdsp::chowdsp_logging
         chowdsp::chowdsp_plugin_base
         chowdsp::chowdsp_plugin_state
         chowdsp::chowdsp_gui
         chowdsp::chowdsp_buffers
+        chowdsp::chowdsp_filters
         chowdsp::chowdsp_clap_extensions
         clap_juce_extensions
         RTNeural
@@ -56,6 +59,8 @@ setup_source_group(neural_pruning_plugin PLUGIN_SRCS SOURCES
     neural_pruning_plugin.cpp
     lstm_model.h
     lstm_model.cpp
+    plugin_editor.h
+    plugin_editor.cpp
 )
 
 file(GLOB_RECURSE juce_module_sources CONFIGURE_DEPENDS
