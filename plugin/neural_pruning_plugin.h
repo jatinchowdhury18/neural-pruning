@@ -35,10 +35,10 @@ public:
 
     Console_Logger logger {};
 
-private:
     LSTM_Model lstm_model {};
 
     chowdsp::OnePoleSVF<float, chowdsp::OnePoleSVFType::Highpass> dc_blocker;
 
+private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Neural_Pruning_Plugin)
 };

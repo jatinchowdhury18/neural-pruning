@@ -1,11 +1,16 @@
 #include "lstm_model.h"
 #include <random>
 
+void LSTM_Model::reload_original_model()
+{
+    model_state_dict = model_json_original["state_dict"];
+    load_model (model_state_dict, model_json_original["model_data"]["hidden_size"].get<int>());
+}
+
 void LSTM_Model::load_model (const nlohmann::json& model_json)
 {
     model_json_original = model_json;
-    load_model (model_json_original["state_dict"],
-                model_json_original["model_data"]["hidden_size"].get<int>());
+    reload_original_model();
 }
 
 template <typename Fn, size_t... Ix>
@@ -33,6 +38,8 @@ void LSTM_Model::load_model (const nlohmann::json& state_dict, int hidden_size)
 {
     juce::SpinLock::ScopedLockType model_loading_lock { model_loading_mutex };
 
+    current_hidden_size = hidden_size;
+
     for_each_index (
         [this, hidden_size] (auto i)
         {
@@ -51,6 +58,8 @@ void LSTM_Model::load_model (const nlohmann::json& state_dict, int hidden_size)
             RTNeural::torch_helpers::loadDense<float> (state_dict, "lin.", model.template get<1>());
         },
         model_variant);
+
+    model_changed();
 }
 
 void LSTM_Model::process (std::span<float> data, float param)
@@ -157,7 +166,10 @@ static auto model_prune (nlohmann::json& state_dict,
 {
     std::vector<float> error_vals (hidden_size);
     for (int i = 0; i < hidden_size; ++i)
+    {
+        chowdsp::log ("Testing candidate pruning channel {}...", i);
         error_vals[i] = test_channel_prune (state_dict, ground_truth_output, i, hidden_size);
+    }
 
     const auto min_iter = std::min_element (error_vals.begin(), error_vals.end());
     const auto min_channel = std::distance (error_vals.begin(), min_iter);
@@ -165,7 +177,7 @@ static auto model_prune (nlohmann::json& state_dict,
     return std::make_tuple (min_channel, *min_iter);
 }
 
-static auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& hidden_size, std::span<const float> ground_truth_output)
+static auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& hidden_size)
 {
     chowdsp::log ("Pruning channel: {}...", prune_channel);
     state_dict["lin.weight"][0].erase (prune_channel);
@@ -181,6 +193,12 @@ static auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& h
         row.erase (prune_channel);
 
     hidden_size--;
+}
+
+static auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& hidden_size, std::span<const float> ground_truth_output)
+{
+    ::prune_channel (state_dict, prune_channel, hidden_size);
+
     const auto prune_output = run_model (state_dict, hidden_size);
     const auto prune_rms_error = compute_rms_error (ground_truth_output, prune_output);
     chowdsp::log ("RMS Error: {}\n", prune_rms_error);
@@ -218,4 +236,25 @@ void LSTM_Model::prune_model()
     chowdsp::log ("Finished pruning model...");
 
     load_model (pruned_state_dict, pruned_hidden_size);
+}
+
+void LSTM_Model::find_pruning_candidate()
+{
+    chowdsp::log ("Finding pruning candidate...");
+
+    juce::Thread::launch (
+        [this]
+        {
+            auto ground_truth_output = run_model (model_state_dict, current_hidden_size);
+            const auto [channel_to_prune, prune_error] = model_prune (model_state_dict, ground_truth_output, current_hidden_size);
+
+            const juce::MessageManagerLock mml {};
+            new_pruning_candidate (channel_to_prune, prune_error);
+        });
+}
+
+void LSTM_Model::prune_channel (int channel_idx)
+{
+    ::prune_channel (model_state_dict, channel_idx, current_hidden_size);
+    load_model (model_state_dict, current_hidden_size);
 }

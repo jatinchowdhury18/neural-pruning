@@ -28,7 +28,7 @@ struct Console_Logger : chowdsp::BaseLogger
 
     void update_console() const
     {
-        jassert (juce::MessageManager::existsAndIsCurrentThread());
+        const juce::MessageManagerLock mml {};
         if (console != nullptr)
         {
             console->setText (log_text, juce::sendNotification);

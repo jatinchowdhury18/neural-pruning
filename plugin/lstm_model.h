@@ -48,7 +48,15 @@ struct LSTM_Model
     nlohmann::json model_json_original;
 
     void load_model (const nlohmann::json& model_json);
+    void reload_original_model();
     void load_model (const nlohmann::json& state_dict, int hidden_size);
     void prune_model();
     void process (std::span<float> data, float param);
+
+    int current_hidden_size {};
+    nlohmann::json model_state_dict {};
+    void find_pruning_candidate();
+    void prune_channel (int channel_idx);
+    chowdsp::Broadcaster<void (int channel, float rms_error)> new_pruning_candidate {};
+    chowdsp::Broadcaster<void()> model_changed {};
 };

@@ -11,8 +11,6 @@ Neural_Pruning_Plugin::Neural_Pruning_Plugin()
     nlohmann::json model_json {};
     std::ifstream { model_path, std::ifstream::binary } >> model_json;
     lstm_model.load_model (model_json);
-
-    juce::Timer::callAfterDelay (5'000, [this] { lstm_model.prune_model(); });
 }
 
 void Neural_Pruning_Plugin::prepareToPlay (double sample_rate,
@@ -32,7 +30,7 @@ void Neural_Pruning_Plugin::processAudioBlock (juce::AudioBuffer<float>& buffer)
     chowdsp::BufferMath::sumToMono (buffer, mono_buffer);
 
     const auto param = state.params.gain->getCurrentValue();
-    // lstm_model.process (mono_buffer.getWriteSpan (0), param);
+    lstm_model.process (mono_buffer.getWriteSpan (0), param);
     dc_blocker.processBlock (mono_buffer);
 
     for (int ch = 1; ch < buffer.getNumChannels(); ++ch)
