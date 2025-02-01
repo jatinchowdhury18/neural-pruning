@@ -39,6 +39,8 @@ struct Console : juce::Component
 struct Pruning_View : juce::Component
 {
     juce::TextButton prune_find_button { "Find Pruning Candidate" };
+    juce::Slider threshold_slider {};
+    juce::TextButton prune_to_thresh_button { "Prune to Threshold" };
     juce::TextButton prune_button { "Prune" };
     juce::TextButton reset_button { "Reset" };
     juce::Label pruning_status_label {};
@@ -48,6 +50,8 @@ struct Pruning_View : juce::Component
     explicit Pruning_View (LSTM_Model& model, chowdsp::ComponentArena<>& arena)
     {
         addAndMakeVisible (prune_find_button);
+        addAndMakeVisible (threshold_slider);
+        addAndMakeVisible (prune_to_thresh_button);
         addAndMakeVisible (prune_button);
         prune_button.setEnabled (false);
         addAndMakeVisible (reset_button);
@@ -58,6 +62,20 @@ struct Pruning_View : juce::Component
             model.find_pruning_candidate();
         };
         reset_button.onClick = [&model] { model.reload_original_model(); };
+
+        threshold_slider.setNormalisableRange (chowdsp::ParamUtils::createNormalisableRange (1.0e-3, 1.0e-1, 1.0e-2));
+        threshold_slider.setSliderStyle (juce::Slider::SliderStyle::LinearHorizontal);
+        threshold_slider.setColour (juce::Slider::ColourIds::textBoxBackgroundColourId, juce::Colours::black);
+
+        prune_to_thresh_button.onClick = [this, &model]
+        {
+            prune_find_button.setEnabled (false);
+            prune_to_thresh_button.setEnabled (false);
+            prune_button.setEnabled (false);
+
+            const auto thresh = static_cast<float> (threshold_slider.getValue());
+            model.prune_model (thresh);
+        };
 
         pruning_status_label.setJustificationType (juce::Justification::topLeft);
         pruning_status_label.setColour (juce::Label::textColourId, juce::Colours::black);
@@ -85,6 +103,7 @@ struct Pruning_View : juce::Component
                 [this, &model, &arena]
                 {
                     prune_find_button.setEnabled (true);
+                    prune_to_thresh_button.setEnabled (true);
                     prune_button.setEnabled (false);
                     set_status (chowdsp::format (arena.allocator, "Current hidden size: {}", model.current_hidden_size));
                 }),
@@ -103,6 +122,11 @@ struct Pruning_View : juce::Component
         auto button_height = proportionOfHeight (0.1f);
 
         prune_find_button.setBounds (buttons_col.removeFromTop (button_height));
+
+        auto thresh_area = buttons_col.removeFromTop (button_height);
+        prune_to_thresh_button.setBounds (thresh_area.removeFromRight (proportionOfWidth (0.5f)));
+        threshold_slider.setBounds (thresh_area);
+
         prune_button.setBounds (buttons_col.removeFromTop (button_height));
         reset_button.setBounds (buttons_col.removeFromTop (button_height));
         pruning_status_label.setBounds (buttons_col);

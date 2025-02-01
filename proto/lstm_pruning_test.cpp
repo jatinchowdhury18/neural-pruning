@@ -57,10 +57,17 @@ auto run_model (const nlohmann::json& state_dict, int hidden_size)
 
 auto compute_rms_error (std::span<const float> x, std::span<const float> y)
 {
+    const auto mean = [] (std::span<const float> data)
+    {
+        return std::accumulate (data.begin(), data.end(), 0.0f) / static_cast<float> (data.size());
+    };
+    const auto x_mean = mean (x);
+    const auto y_mean = mean (y);
+
     auto square_error_accum = 0.0f;
     for (int n = 0; n < N; ++n)
     {
-        const auto sample_error = x[n] - y[n];
+        const auto sample_error = (x[n] - x_mean) - (y[n] - y_mean);
         square_error_accum += sample_error * sample_error;
     }
 

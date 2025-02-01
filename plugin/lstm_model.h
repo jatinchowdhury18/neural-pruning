@@ -50,7 +50,7 @@ struct LSTM_Model
     void load_model (const nlohmann::json& model_json);
     void reload_original_model();
     void load_model (const nlohmann::json& state_dict, int hidden_size);
-    void prune_model();
+    void prune_model (float pruning_error_threshold);
     void process (std::span<float> data, float param);
 
     int current_hidden_size {};

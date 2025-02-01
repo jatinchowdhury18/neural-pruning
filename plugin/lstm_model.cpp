@@ -119,10 +119,17 @@ static auto run_model (const nlohmann::json& state_dict, int hidden_size)
 
 static auto compute_rms_error (std::span<const float> x, std::span<const float> y)
 {
+    const auto mean = [] (std::span<const float> data)
+    {
+        return std::accumulate (data.begin(), data.end(), 0.0f) / static_cast<float> (data.size());
+    };
+    const auto x_mean = mean (x);
+    const auto y_mean = mean (y);
+
     auto square_error_accum = 0.0f;
     for (size_t n = 0; n < x.size(); ++n)
     {
-        const auto sample_error = x[n] - y[n];
+        const auto sample_error = (x[n] - x_mean) - (y[n] - y_mean);
         square_error_accum += sample_error * sample_error;
     }
 
@@ -206,12 +213,11 @@ static auto prune_channel (nlohmann::json& state_dict, int prune_channel, int& h
     return prune_output;
 }
 
-static auto prune_model (nlohmann::json state_dict, int hidden_size)
+static auto prune_model (nlohmann::json state_dict, int hidden_size, float pruning_error_threshold)
 {
     auto ground_truth_output = run_model (state_dict, hidden_size);
 
     static constexpr auto hidden_size_threshold = 4;
-    static constexpr auto pruning_error_threshold = 0.05;
     chowdsp::log ("Pruning error threshold: {}", pruning_error_threshold);
     chowdsp::log ("Pruning hidden size threshold: {}", hidden_size_threshold);
     while (hidden_size > hidden_size_threshold)
@@ -228,11 +234,12 @@ static auto prune_model (nlohmann::json state_dict, int hidden_size)
     return std::make_pair (state_dict, hidden_size);
 }
 
-void LSTM_Model::prune_model()
+void LSTM_Model::prune_model (float pruning_error_threshold)
 {
     chowdsp::log ("Pruning model...");
     const auto [pruned_state_dict, pruned_hidden_size] = ::prune_model (model_json_original["state_dict"],
-                                                                        model_json_original["model_data"]["hidden_size"].get<int>());
+                                                                        model_json_original["model_data"]["hidden_size"].get<int>(),
+                                                                        pruning_error_threshold);
     chowdsp::log ("Finished pruning model...");
 
     load_model (pruned_state_dict, pruned_hidden_size);
