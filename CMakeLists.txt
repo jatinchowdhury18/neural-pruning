@@ -11,6 +11,11 @@ CPMAddPackage(
     GIT_TAG main
     OPTIONS "RTNEURAL_XSIMD ON"
 )
+CPMAddPackage(
+    NAME libsndfile
+    GIT_REPOSITORY https://github.com/libsndfile/libsndfile
+    GIT_TAG master
+)
 
 add_subdirectory(proto)
 add_subdirectory(plugin)
