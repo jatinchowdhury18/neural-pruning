@@ -160,6 +160,27 @@ struct Model
     void process (std::span<float> data, float param);
 };
 
+static int count_params (const nlohmann::json& model_json)
+{
+    int count = 0;
+    for (auto& layer : model_json["layers"])
+    {
+        for (auto& weights_matrix : layer["weights"])
+        {
+            if (weights_matrix[0].is_array())
+            {
+                for (auto& row : weights_matrix)
+                    count += row.size();
+            }
+            else
+            {
+                count += weights_matrix.size();
+            }
+        }
+    }
+    return count;
+}
+
 static std::vector<float> run_model (Model& model, std::span<const float> input, bool verbose = true)
 {
     std::vector<float> out (input.size());
@@ -294,8 +315,6 @@ static float rank_mean_activations (const nlohmann::json& model_json,
 
     const auto mean = compute_mean (activation_out);
     const auto variance = compute_stddev (activation_out, mean);
-
-    std::cout << mean << " || " << variance << '\n';
     return variance;
 }
 
@@ -389,6 +408,7 @@ int main()
     auto model_json = get_model_json();
 
     {
+        std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
         const auto model_out = run_model (model, in_data);
         std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
@@ -401,8 +421,9 @@ int main()
         auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
         std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
 
-        static constexpr auto n_prune = 36;
+        static constexpr auto n_prune = 12;
         model_json = prune (model_json, std::span { pruning_candidates }.subspan (0, n_prune));
+        std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
         const auto model_out = run_model (model, in_data);
         std::cout << "Prune 1 MSE: " << compute_mse (model_out, target_data) << '\n';

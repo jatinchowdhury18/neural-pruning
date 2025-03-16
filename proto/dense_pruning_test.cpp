@@ -111,6 +111,27 @@ struct Model
     }
 };
 
+static int count_params (const nlohmann::json& model_json)
+{
+    int count = 0;
+    for (auto& layer : model_json["layers"])
+    {
+        for (auto& weights_matrix : layer["weights"])
+        {
+            if (weights_matrix[0].is_array())
+            {
+                for (auto& row : weights_matrix)
+                    count += row.size();
+            }
+            else
+            {
+                count += weights_matrix.size();
+            }
+        }
+    }
+    return count;
+}
+
 template <typename Model_Type>
 static std::vector<float> run_model (Model_Type& model, std::span<const float> input, bool verbose = true)
 {
@@ -417,6 +438,7 @@ int main()
     auto model_json = get_model_json();
 
     {
+        std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
         const auto model_out = run_model (model, in_data);
         std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
@@ -431,6 +453,7 @@ int main()
 
         static constexpr auto n_prune = 96;
         model_json = prune (model_json, std::span { pruning_candidates }.subspan (0, n_prune));
+        std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
         const auto model_out = run_model (model, in_data);
         std::cout << "Prune 1 MSE: " << compute_mse (model_out, target_data) << '\n';
