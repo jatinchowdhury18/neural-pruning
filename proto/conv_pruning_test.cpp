@@ -47,7 +47,7 @@ static std::tuple<std::vector<float>, std::vector<float>> get_audio_data()
 
 static auto get_model_json()
 {
-    const auto model_path { std::string { TRAIN_DIR } + "/dense.json" };
+    const auto model_path { std::string { TRAIN_DIR } + "/conv.json" };
     nlohmann::json model_json {};
     std::ifstream { model_path, std::ifstream::binary } >> model_json;
     return model_json;
@@ -69,29 +69,39 @@ static auto compute_mse (std::span<const float> x, std::span<const float> y)
 
 struct Model
 {
-    static constexpr auto num_layers = 8;
-    static constexpr auto layer_width = 64;
+    static constexpr auto num_layers = 4;
+    static constexpr auto layer_width = 32;
 
-    std::vector<RTNeural::Dense<float>> dense_layers {};
-    RTNeural::ReLuActivation<float> relu_activation { layer_width };
+    std::vector<RTNeural::Conv1D<float>> conv_layers {};
+    RTNeural::TanhActivation<float> tanh_activation { layer_width };
+    std::optional<RTNeural::Dense<float>> dense_layer {};
     alignas (16) std::array<std::array<float, layer_width>, num_layers + 1> layer_io {};
 
     explicit Model (const nlohmann::json& model_json)
     {
-        dense_layers.reserve (num_layers + 1);
+        conv_layers.reserve (num_layers);
 
         assert (model_json["in_shape"].back() == 1);
         int in_size = 1;
         for (auto& layer : model_json["layers"])
         {
-            if (layer["type"] == "activation")
-                continue;
-
-            // std::cout << "Loading layer " << layer.dump() << '\n';
             const auto out_size = layer["shape"].back().get<int>();
-            // std::cout << "Dense {" << in_size << "," << out_size << "}\n";
-            auto& dense_layer = dense_layers.emplace_back (in_size, out_size);
-            RTNeural::json_parser::loadDense<float> (dense_layer, layer["weights"]);
+            // std::cout << layer["type"] << " {" << in_size << "," << out_size << "}\n";
+            if (layer["type"] == "conv1d")
+            {
+                const auto kernel_size = layer["kernel_size"].back().get<int>();
+                const auto dilation = layer["dilation"].back().get<int>();
+                auto& conv1d = conv_layers.emplace_back (in_size,
+                                                         out_size,
+                                                         kernel_size,
+                                                         dilation);
+                RTNeural::json_parser::loadConv1D<float> (conv1d, kernel_size, dilation, layer["weights"]);
+            }
+            else if (layer["type"] == "dense")
+            {
+                auto& dense = dense_layer.emplace (in_size, out_size);
+                RTNeural::json_parser::loadDense<float> (dense, layer["weights"]);
+            }
             in_size = out_size;
         }
         assert (in_size == 1);
@@ -99,13 +109,15 @@ struct Model
 
     float forward (const float* in) noexcept
     {
-        dense_layers.front().forward (in, layer_io.front().data());
+        conv_layers.front().forward (in, layer_io.front().data());
+        tanh_activation.forward (layer_io.front().data(), layer_io.front().data());
 
-        for (int i = 0; i < num_layers; ++i)
+        for (int i = 0; i < num_layers - 1; ++i)
         {
-            relu_activation.forward (layer_io[i].data(), layer_io[i].data());
-            dense_layers[i + 1].forward (layer_io[i].data(), layer_io[i + 1].data());
+            conv_layers[i + 1].forward (layer_io[i].data(), layer_io[i + 1].data());
+            tanh_activation.forward (layer_io[i + 1].data(), layer_io[i + 1].data());
         }
+        dense_layer->forward (layer_io[num_layers - 1].data(), layer_io[num_layers].data());
 
         return layer_io.back()[0];
     }
@@ -121,7 +133,17 @@ static int count_params (const nlohmann::json& model_json)
             if (weights_matrix[0].is_array())
             {
                 for (auto& row : weights_matrix)
-                    count += row.size();
+                {
+                    if (row[0].is_array())
+                    {
+                        for (auto& el : row)
+                            count += el.size();
+                    }
+                    else
+                    {
+                        count += row.size();
+                    }
+                }
             }
             else
             {
@@ -154,7 +176,6 @@ struct Pruning_Candidate
 {
     int layer {};
     int row { -1 };
-    int column { -1 };
     float value { 0.0f };
 };
 
@@ -166,31 +187,12 @@ static nlohmann::json prune (nlohmann::json model_json,
     for (int prune_idx = 0; prune_idx < candidates_to_prune.size(); ++prune_idx)
     {
         const auto& to_prune = candidates_to_prune[prune_idx];
-        const auto erase_row = [&] (int layer_idx, int row_idx)
-        {
-            for (int fix_idx = prune_idx; fix_idx < candidates_to_prune.size(); ++fix_idx)
-            {
-                auto& to_fix = candidates_to_prune[fix_idx];
-                if (to_fix.layer == layer_idx && to_fix.row > row_idx)
-                    to_fix.row--;
-            }
-        };
-
-        const auto erase_col = [&] (int layer_idx, int col_idx)
-        {
-            for (int fix_idx = prune_idx; fix_idx < candidates_to_prune.size(); ++fix_idx)
-            {
-                auto& to_fix = candidates_to_prune[fix_idx];
-                if (to_fix.layer == layer_idx && to_fix.column > col_idx)
-                    to_fix.column--;
-            }
-        };
 
         auto& layers = model_json["layers"];
         for (int layer_idx = 0; layer_idx < layers.size(); ++layer_idx)
         {
             auto& layer = layers.at (layer_idx);
-            if (layer["type"] == "activation")
+            if (layer["type"] != "conv1d")
                 continue;
 
             // Convention:
@@ -199,43 +201,38 @@ static nlohmann::json prune (nlohmann::json model_json,
 
             if (to_prune.layer == layer_idx)
             {
-                if (to_prune.row >= 0) // pruning a row
-                {
-                    auto& weights = layer["weights"].at (0);
-                    auto& biases = layer["weights"].at (1);
-                    for (auto& w : weights)
-                        w.erase (to_prune.row);
-                    erase_row (layer_idx, to_prune.row);
-                    biases.erase (to_prune.row);
-                    layer["shape"].back() = layer["shape"].back().get<int>() - 1;
+                auto& weights = layer["weights"].at (0);
+                auto& biases = layer["weights"].at (1);
 
-                    auto next_layer_idx = layer_idx + 2;
-                    if (next_layer_idx < layers.size())
+                for (auto& kernel : weights)
+                {
+                    for (auto& filter : kernel)
+                        filter.erase (to_prune.row);
+                }
+                biases.erase (to_prune.row);
+                layer["shape"].back() = layer["shape"].back().get<int>() - 1;
+
+                auto next_layer_idx = layer_idx + 1;
+                if (next_layer_idx < layers.size())
+                {
+                    auto& next_layer = layers.at (next_layer_idx);
+                    auto& next_weights = next_layer["weights"].at (0);
+                    if (next_layer["type"] == "conv1d")
                     {
-                        auto& next_layer = layers.at (next_layer_idx);
-                        auto& next_weights = next_layer["weights"].at (0);
+                        for (auto& kernel : next_weights)
+                            kernel.erase (to_prune.row);
+                    }
+                    else if (next_layer["type"] == "dense")
+                    {
                         next_weights.erase (to_prune.row);
-                        erase_col (next_layer_idx, to_prune.row);
                     }
                 }
-                else if (to_prune.column >= 0) // pruning a column
-                {
-                    auto prev_layer_idx = layer_idx - 2;
-                    if (prev_layer_idx >= 0)
-                    {
-                        auto& prev_layer = layers.at (prev_layer_idx);
-                        auto& weights = prev_layer["weights"].at (0);
-                        auto& biases = prev_layer["weights"].at (1);
-                        for (auto& w : weights)
-                            w.erase (to_prune.column);
-                        erase_row (prev_layer_idx, to_prune.column);
-                        biases.erase (to_prune.column);
-                        prev_layer["shape"].back() = prev_layer["shape"].back().get<int>() - 1;
-                    }
 
-                    auto& weights = layer["weights"].at (0);
-                    weights.erase (to_prune.column);
-                    erase_col (layer_idx, to_prune.column);
+                for (int fix_idx = prune_idx; fix_idx < candidates_to_prune.size(); ++fix_idx)
+                {
+                    auto& to_fix = candidates_to_prune[fix_idx];
+                    if (to_fix.layer == layer_idx && to_fix.row > to_prune.row)
+                        to_fix.row--;
                 }
 
                 break;
@@ -248,30 +245,20 @@ static nlohmann::json prune (nlohmann::json model_json,
 
 static float rank_min_weights (const nlohmann::json& model_json,
                                int layer_idx,
-                               int row,
-                               int col)
+                               int row)
 {
     auto& layers = model_json["layers"].at (layer_idx);
     auto& weights = layers["weights"].at (0);
 
     float square_sum = 0.0f;
-    if (row >= 0)
+    for (auto& kernel : weights)
     {
-        for (auto& w : weights)
+        for (auto& filter : kernel)
         {
-            auto v = w.at (row).get<float>();
+            auto v = filter.at (row).get<float>();
             square_sum += v * v;
         }
     }
-    else if (col >= 0)
-    {
-        for (const auto& w : weights.at (col))
-        {
-            auto v = w.get<float>();
-            square_sum += v * v;
-        }
-    }
-
     return square_sum;
 }
 
@@ -301,12 +288,21 @@ static float rank_mean_activations (const nlohmann::json& model_json,
     std::vector<float> activation_out (in_data.size());
     for (size_t n = 0; n < in_data.size(); ++n)
     {
-        [[maybe_unused]] auto _ = model.forward (&in_data[n]);
-        activation_out[n] = model.layer_io[layer_idx / 2][row];
+        model.conv_layers.front().forward (&in_data[n], model.layer_io.front().data());
+        model.tanh_activation.forward (model.layer_io.front().data(), model.layer_io.front().data());
+
+        for (int i = 0; i < layer_idx; ++i)
+        {
+            model.conv_layers[i + 1].forward (model.layer_io[i].data(), model.layer_io[i + 1].data());
+            model.tanh_activation.forward (model.layer_io[i + 1].data(), model.layer_io[i + 1].data());
+        }
+
+        activation_out[n] = model.layer_io[layer_idx][row];
     }
 
     const auto mean = compute_mean (activation_out);
     const auto variance = compute_stddev (activation_out, mean);
+    // std::cout << mean << " || " << variance << std::endl;
 
     return variance;
 }
@@ -314,21 +310,18 @@ static float rank_mean_activations (const nlohmann::json& model_json,
 static float rank_minimization (nlohmann::json model_json,
                                 int layer_idx,
                                 int row,
-                                int col,
                                 std::span<const float> in_data,
                                 std::span<const float> target_data)
 {
     auto& layers = model_json["layers"].at (layer_idx);
     auto& weights = layers["weights"].at (0);
-    if (row >= 0)
+
+    for (auto& kernel : weights)
     {
-        for (auto& w : weights)
-            w.at (row) = 0.0f;
-    }
-    else if (col >= 0)
-    {
-        for (auto& w : weights.at (col))
-            w = 0.0f;
+        for (auto& filter : kernel)
+        {
+            filter.at (row) = 0.0f;
+        }
     }
 
     Model model { model_json };
@@ -352,65 +345,38 @@ static auto rank_pruning_candidates (nlohmann::json model_json, Ranking ranking,
     std::vector<std::future<void>> futures {};
     std::mutex mutex {};
     std::vector<Pruning_Candidate> candidates {};
-    int cols = 1;
 
     auto& layers = model_json["layers"];
     for (int layer_idx = 0; layer_idx < layers.size(); ++layer_idx)
     {
         auto& layer = layers.at (layer_idx);
-        if (layer["type"] == "activation")
+        if (layer["type"] != "conv1d")
             continue;
 
         const auto rows = layer["shape"].back().get<int>();
 
-        futures.push_back (std::async (std::launch::async,
-                                       [ranking, model_json, layer_idx, in_data, target_data, rows, cols, &candidates, &mutex]
-                                       {
-                                           if (rows > 1)
-                                           {
-                                               for (int r = 0; r < rows; ++r)
-                                               {
-                                                   float value {};
-                                                   if (ranking == Ranking::Min_Weights)
-                                                       value = rank_min_weights (model_json, layer_idx, r, -1);
-                                                   else if (ranking == Ranking::Mean_Activations)
-                                                       value = rank_mean_activations (model_json, layer_idx, r, in_data);
-                                                   else if (ranking == Ranking::Minimization)
-                                                       value = rank_minimization (model_json, layer_idx, r, -1, in_data, target_data);
+        futures.push_back (
+            std::async (std::launch::async,
+                        [ranking, model_json, layer_idx, in_data, target_data, rows, &candidates, &mutex]
+                        {
+                            for (int r = 0; r < rows; ++r)
+                            {
+                                float value {};
+                                if (ranking == Ranking::Min_Weights)
+                                    value = rank_min_weights (model_json, layer_idx, r);
+                                else if (ranking == Ranking::Mean_Activations)
+                                    value = rank_mean_activations (model_json, layer_idx, r, in_data);
+                                else if (ranking == Ranking::Minimization)
+                                    value = rank_minimization (model_json, layer_idx, r, in_data, target_data);
 
-                                                   std::lock_guard lock { mutex };
-                                                   candidates.push_back (Pruning_Candidate {
-                                                       .layer = layer_idx,
-                                                       .row = r,
-                                                       .column = -1,
-                                                       .value = value,
-                                                   });
-                                               }
-                                           }
-                                           if (cols > 1)
-                                           {
-                                               for (int c = 0; c < cols; ++c)
-                                               {
-                                                   float value {};
-                                                   if (ranking == Ranking::Min_Weights)
-                                                       value = rank_min_weights (model_json, layer_idx, -1, c);
-                                                   else if (ranking == Ranking::Minimization)
-                                                       value = rank_minimization (model_json, layer_idx, -1, c, in_data, target_data);
-                                                   else
-                                                       break;
-
-                                                   std::lock_guard lock { mutex };
-                                                   candidates.push_back (Pruning_Candidate {
-                                                       .layer = layer_idx,
-                                                       .row = -1,
-                                                       .column = c,
-                                                       .value = value,
-                                                   });
-                                               }
-                                           }
-                                       }));
-
-        cols = rows; // for next layer
+                                std::lock_guard lock { mutex };
+                                candidates.push_back (Pruning_Candidate {
+                                    .layer = layer_idx,
+                                    .row = r,
+                                    .value = value,
+                                });
+                            }
+                        }));
     }
 
     for (auto& f : futures)
@@ -445,13 +411,13 @@ int main()
     }
 
     {
-        const auto ranking = Ranking::Min_Weights;
-        // const auto ranking = Ranking::Mean_Activations;
+        // const auto ranking = Ranking::Min_Weights;
+        const auto ranking = Ranking::Mean_Activations;
         // const auto ranking = Ranking::Minimization;
         auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
         std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
 
-        static constexpr auto n_prune = 96;
+        static constexpr auto n_prune = 32;
         model_json = prune (model_json, std::span { pruning_candidates }.subspan (0, n_prune));
         std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
