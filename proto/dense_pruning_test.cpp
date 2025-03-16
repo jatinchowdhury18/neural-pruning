@@ -1,3 +1,4 @@
+#include <future>
 #include <iostream>
 #include <random>
 #include <sndfile.h>
@@ -9,6 +10,10 @@ static std::tuple<std::vector<float>, std::vector<float>> get_audio_data()
     // re-use the same data that we used for training
     static constexpr int seek_offset = 2'000'000;
     static constexpr int num_samples = 1'471'622;
+
+    // Or, use validation data
+    // static constexpr int seek_offset = 1'500'000;
+    // static constexpr int num_samples = 500'000;
 
     std::vector<float> in_data (num_samples);
     std::vector<float> target_data (num_samples);
@@ -69,7 +74,7 @@ struct Model
 
     std::vector<RTNeural::Dense<float>> dense_layers {};
     RTNeural::ReLuActivation<float> relu_activation { layer_width };
-    std::array<std::array<float, layer_width>, num_layers + 1> layer_io {};
+    alignas (16) std::array<std::array<float, layer_width>, num_layers + 1> layer_io {};
 
     explicit Model (const nlohmann::json& model_json)
     {
@@ -107,7 +112,7 @@ struct Model
 };
 
 template <typename Model_Type>
-static std::vector<float> run_model (Model_Type& model, std::span<const float> input)
+static std::vector<float> run_model (Model_Type& model, std::span<const float> input, bool verbose = true)
 {
     std::vector<float> out (input.size());
 
@@ -117,9 +122,9 @@ static std::vector<float> run_model (Model_Type& model, std::span<const float> i
         out[n] = model.forward (&input[n]);
 
     const auto duration = std::chrono::high_resolution_clock::now() - start;
-    const auto test_duration_seconds = std::chrono::duration<float> {  duration }.count();
-    std::cout << "Inference Time: " << test_duration_seconds << " seconds" << std::endl;
-
+    const auto test_duration_seconds = std::chrono::duration<float> { duration }.count();
+    if (verbose)
+        std::cout << "Inference Time: " << test_duration_seconds << " seconds" << std::endl;
 
     return out;
 }
@@ -220,10 +225,10 @@ static nlohmann::json prune (nlohmann::json model_json,
     return model_json;
 }
 
-static float rank (nlohmann::json model_json,
-                   int layer_idx,
-                   int row,
-                   int col)
+static float rank_min_weights (nlohmann::json model_json,
+                               int layer_idx,
+                               int row,
+                               int col)
 {
     auto& layers = model_json["layers"].at (layer_idx);
     auto& weights = layers["weights"].at (0);
@@ -249,8 +254,84 @@ static float rank (nlohmann::json model_json,
     return square_sum;
 }
 
-static auto rank_pruning_candidates (nlohmann::json model_json)
+static float compute_mean (std::span<const float> values)
 {
+    return std::accumulate (values.begin(), values.end(), 0.0f) / static_cast<float> (values.size());
+}
+
+static float compute_stddev (std::span<const float> values, float mean)
+{
+    return std::sqrt (
+        std::accumulate (values.begin(),
+                         values.end(),
+                         0.0f,
+                         [mean] (float a, float b)
+                         { return a + (b - mean) * (b - mean); })
+        / static_cast<float> (values.size()));
+}
+
+static float rank_mean_activations (const nlohmann::json& model_json,
+                                    int layer_idx,
+                                    int row,
+                                    std::span<const float> in_data)
+{
+    Model model { model_json };
+    const auto model_out = run_model (model, in_data, false);
+
+    std::vector<float> activation_out (in_data.size());
+
+    for (size_t n = 0; n < in_data.size(); ++n)
+    {
+        [[maybe_unused]] auto _ = model.forward (&in_data[n]);
+        activation_out[n] = model.layer_io[layer_idx / 2][row];
+    }
+
+    const auto mean = compute_mean (activation_out);
+    const auto variance = compute_stddev (activation_out, mean);
+
+    return variance;
+}
+
+static float rank_minimization (nlohmann::json model_json,
+                                int layer_idx,
+                                int row,
+                                int col,
+                                std::span<const float> in_data,
+                                std::span<const float> target_data)
+{
+    auto& layers = model_json["layers"].at (layer_idx);
+    auto& weights = layers["weights"].at (0);
+    if (row >= 0)
+    {
+        for (auto& w : weights)
+            w.at (row) = 0.0f;
+    }
+    else if (col >= 0)
+    {
+        for (auto& w : weights.at (col))
+            w = 0.0f;
+    }
+
+    Model model { model_json };
+    const auto model_out = run_model (model, in_data, false);
+    const auto mse = compute_mse (model_out, target_data);
+
+    return mse;
+}
+
+enum class Ranking
+{
+    Min_Weights,
+    Mean_Activations,
+    Minimization,
+};
+
+static auto rank_pruning_candidates (nlohmann::json model_json, Ranking ranking, std::span<const float> in_data, std::span<const float> target_data)
+{
+    const auto start = std::chrono::high_resolution_clock::now();
+
+    std::vector<std::future<void>> futures {};
+    std::mutex mutex {};
     std::vector<Pruning_Candidate> candidates {};
     int cols = 1;
 
@@ -263,33 +344,58 @@ static auto rank_pruning_candidates (nlohmann::json model_json)
 
         const auto rows = layer["shape"].back().get<int>();
 
-        if (rows > 1)
-        {
-            for (int r = 0; r < rows; ++r)
-            {
-                candidates.push_back (Pruning_Candidate {
-                    .layer = layer_idx,
-                    .row = r,
-                    .column = -1,
-                    .value = rank (model_json, layer_idx, r, -1),
-                });
-            }
-        }
-        if (cols > 1)
-        {
-            for (int c = 0; c < cols; ++c)
-            {
-                candidates.push_back (Pruning_Candidate {
-                    .layer = layer_idx,
-                    .row = -1,
-                    .column = c,
-                    .value = rank (model_json, layer_idx, -1, c),
-                });
-            }
-        }
+        futures.push_back (std::async (std::launch::async,
+                                       [ranking, model_json, layer_idx, in_data, target_data, rows, cols, &candidates, &mutex]
+                                       {
+                                           if (rows > 1)
+                                           {
+                                               for (int r = 0; r < rows; ++r)
+                                               {
+                                                   float value {};
+                                                   if (ranking == Ranking::Min_Weights)
+                                                       value = rank_min_weights (model_json, layer_idx, r, -1);
+                                                   else if (ranking == Ranking::Mean_Activations)
+                                                       value = rank_mean_activations (model_json, layer_idx, r, in_data);
+                                                   else if (ranking == Ranking::Minimization)
+                                                       value = rank_minimization (model_json, layer_idx, r, -1, in_data, target_data);
+
+                                                   std::lock_guard lock { mutex };
+                                                   candidates.push_back (Pruning_Candidate {
+                                                       .layer = layer_idx,
+                                                       .row = r,
+                                                       .column = -1,
+                                                       .value = value,
+                                                   });
+                                               }
+                                           }
+                                           if (cols > 1)
+                                           {
+                                               for (int c = 0; c < cols; ++c)
+                                               {
+                                                   float value {};
+                                                   if (ranking == Ranking::Min_Weights)
+                                                       value = rank_min_weights (model_json, layer_idx, -1, c);
+                                                   else if (ranking == Ranking::Minimization)
+                                                       value = rank_minimization (model_json, layer_idx, -1, c, in_data, target_data);
+                                                   else
+                                                       break;
+
+                                                   std::lock_guard lock { mutex };
+                                                   candidates.push_back (Pruning_Candidate {
+                                                       .layer = layer_idx,
+                                                       .row = -1,
+                                                       .column = c,
+                                                       .value = value,
+                                                   });
+                                               }
+                                           }
+                                       }));
 
         cols = rows; // for next layer
     }
+
+    for (auto& f : futures)
+        f.wait();
 
     std::sort (candidates.begin(),
                candidates.end(),
@@ -297,6 +403,10 @@ static auto rank_pruning_candidates (nlohmann::json model_json)
                {
                    return a.value < b.value;
                });
+
+    const auto duration = std::chrono::high_resolution_clock::now() - start;
+    const auto test_duration_seconds = std::chrono::duration<float> { duration }.count();
+    std::cout << "Ranking Time: " << test_duration_seconds << " seconds" << std::endl;
 
     return candidates;
 }
@@ -315,7 +425,10 @@ int main()
     }
 
     {
-        auto pruning_candidates = rank_pruning_candidates (model_json);
+        // const auto ranking = Ranking::Min_Weights;
+        const auto ranking = Ranking::Mean_Activations;
+        // const auto ranking = Ranking::Minimization;
+        auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
         std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
 
         static constexpr auto n_prune = 96;

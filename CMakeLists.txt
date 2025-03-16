@@ -9,7 +9,7 @@ CPMAddPackage(
     NAME RTNeural
     GIT_REPOSITORY https://github.com/jatinchowdhury18/RTNeural
     GIT_TAG main
-    OPTIONS "RTNEURAL_XSIMD ON"
+    OPTIONS "RTNEURAL_EIGEN ON"
 )
 CPMAddPackage(
     NAME libsndfile
