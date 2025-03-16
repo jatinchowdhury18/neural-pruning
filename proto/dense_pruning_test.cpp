@@ -28,7 +28,7 @@ static std::tuple<std::vector<float>, std::vector<float>> get_audio_data()
     }
 
     {
-        // this file is stereo, but we're only going to use te left channel
+        // this file is stereo, but we're only going to use the left channel
         const auto audio_path { std::string { TRAIN_DIR } + "/fuzz_15_50.wav" };
         SF_INFO audio_file_info;
         auto* audio_file = sf_open (audio_path.c_str(), SFM_READ, &audio_file_info);
@@ -276,10 +276,8 @@ static float rank_mean_activations (const nlohmann::json& model_json,
                                     std::span<const float> in_data)
 {
     Model model { model_json };
-    const auto model_out = run_model (model, in_data, false);
 
     std::vector<float> activation_out (in_data.size());
-
     for (size_t n = 0; n < in_data.size(); ++n)
     {
         [[maybe_unused]] auto _ = model.forward (&in_data[n]);
@@ -425,8 +423,8 @@ int main()
     }
 
     {
-        // const auto ranking = Ranking::Min_Weights;
-        const auto ranking = Ranking::Mean_Activations;
+        const auto ranking = Ranking::Min_Weights;
+        // const auto ranking = Ranking::Mean_Activations;
         // const auto ranking = Ranking::Minimization;
         auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
         std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
