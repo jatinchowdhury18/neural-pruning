@@ -272,10 +272,32 @@ static nlohmann::json prune (nlohmann::json model_json,
     return model_json;
 }
 
-static float rank_min_weights (nlohmann::json model_json,
+static float rank_min_weights (const nlohmann::json& model_json,
                                int idx)
 {
-    return 0.0f;
+    const auto hidden_size = model_json["layers"][0]["shape"].back().get<int>();
+    auto& lstm_weights = model_json["layers"][0]["weights"];
+    auto& kernel_weights = lstm_weights.at (0);
+    auto& recurrent_weights = lstm_weights.at (1);
+    auto& dense_weights = model_json["layers"][1]["weights"][0];
+
+    const auto square = [] (float v) { return v * v; };
+    float square_sum = 0.0f;
+
+    for (int i = 0; i < 4; ++i)
+        square_sum += square (kernel_weights[0].at (idx + i * hidden_size).get<float>());
+
+    for (int i = 0; i < hidden_size; ++i)
+    {
+        for (int ii = 0; ii < 4; ++ii)
+            square_sum += square (recurrent_weights[i].at (idx + ii * hidden_size).get<float>());
+    }
+    for (const auto& v : recurrent_weights.at (idx))
+            square_sum += square (v.get<float>());
+
+    square_sum += square (dense_weights.at (idx).at (0).get<float>());
+
+    return square_sum;
 }
 
 static float compute_mean (std::span<const float> values)
@@ -415,8 +437,8 @@ int main()
     }
 
     {
-        // const auto ranking = Ranking::Min_Weights;
-        const auto ranking = Ranking::Mean_Activations;
+        const auto ranking = Ranking::Min_Weights;
+        // const auto ranking = Ranking::Mean_Activations;
         // const auto ranking = Ranking::Minimization;
         auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
         std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
