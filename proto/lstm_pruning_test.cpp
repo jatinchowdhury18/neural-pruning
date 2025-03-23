@@ -181,29 +181,37 @@ static int count_params (const nlohmann::json& model_json)
     return count;
 }
 
-static std::vector<float> run_model (Model& model, std::span<const float> input, bool verbose = true)
+static std::vector<float> run_model (Model& model, std::span<const float> input, bool verbose = true, int num_iters = 1)
 {
     std::vector<float> out (input.size());
 
     const auto start = std::chrono::high_resolution_clock::now();
 
-    std::visit (
-        [input, &out] (auto& model)
-        {
-            for (size_t n = 0; n < input.size(); ++n)
+    for (int i = 0; i < num_iters; ++i)
+    {
+        std::visit (
+            [input, &out] (auto& model)
             {
-                Eigen::Matrix<float, 1, 1> in { input[n] };
-                model.lstm.forward (in);
-                model.dense.forward (model.lstm.outs);
-                out[n] = model.dense.outs (0);
-            }
-        },
-        model.model_variant);
+                for (size_t n = 0; n < input.size(); ++n)
+                {
+                    Eigen::Matrix<float, 1, 1> in { input[n] };
+                    model.lstm.forward (in);
+                    model.dense.forward (model.lstm.outs);
+                    out[n] = model.dense.outs (0);
+                }
+            },
+            model.model_variant);
+    }
 
     const auto duration = std::chrono::high_resolution_clock::now() - start;
     const auto test_duration_seconds = std::chrono::duration<float> { duration }.count();
     if (verbose)
+    {
         std::cout << "Inference Time: " << test_duration_seconds << " seconds" << std::endl;
+        const auto audio_time = (float) (input.size() * num_iters) / 96'000.0f;
+        const auto real_time_factor = audio_time / test_duration_seconds;
+        std::cout << "Real-Time Factor: " << real_time_factor << std::endl;
+    }
 
     return out;
 }
@@ -215,11 +223,13 @@ struct Pruning_Candidate
 };
 
 static nlohmann::json prune (nlohmann::json model_json,
-                             std::span<Pruning_Candidate> candidates_to_prune)
+                             std::span<Pruning_Candidate> candidates_to_prune,
+                             int start,
+                             int num)
 {
-    std::cout << "Pruning " << candidates_to_prune.size() << " structural elements...\n";
+    std::cout << "Pruning " << num << " structural elements...\n";
 
-    for (int prune_idx = 0; prune_idx < candidates_to_prune.size(); ++prune_idx)
+    for (int prune_idx = start; prune_idx < start + num; ++prune_idx)
     {
         const auto& to_prune = candidates_to_prune[prune_idx];
         const auto hidden_size = model_json["layers"][0]["shape"].back().get<int>();
@@ -256,7 +266,7 @@ static nlohmann::json prune (nlohmann::json model_json,
         {
             auto& to_fix = candidates_to_prune[fix_idx];
             if (to_fix.idx > to_prune.idx)
-               to_fix.idx--;
+                to_fix.idx--;
         }
 
         // std::cout << kernel_weights.size() << '\n';
@@ -281,7 +291,8 @@ static float rank_min_weights (const nlohmann::json& model_json,
     auto& recurrent_weights = lstm_weights.at (1);
     auto& dense_weights = model_json["layers"][1]["weights"][0];
 
-    const auto square = [] (float v) { return v * v; };
+    const auto square = [] (float v)
+    { return v * v; };
     float square_sum = 0.0f;
 
     for (int i = 0; i < 4; ++i)
@@ -293,7 +304,7 @@ static float rank_min_weights (const nlohmann::json& model_json,
             square_sum += square (recurrent_weights[i].at (idx + ii * hidden_size).get<float>());
     }
     for (const auto& v : recurrent_weights.at (idx))
-            square_sum += square (v.get<float>());
+        square_sum += square (v.get<float>());
 
     square_sum += square (dense_weights.at (idx).at (0).get<float>());
 
@@ -429,27 +440,33 @@ int main()
     const auto [in_data, target_data] = get_audio_data();
     auto model_json = get_model_json();
 
+    // {
+    //     std::cout << "Parameter count: " << count_params (model_json) << '\n';
+    //     Model model { model_json };
+    //     const auto model_out = run_model (model, in_data, true, 10);
+    //     std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
+    // }
+
+    // const auto ranking = Ranking::Min_Weights;
+    // const auto ranking = Ranking::Mean_Activations;
+    const auto ranking = Ranking::Minimization;
+    auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
+    std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+
+    int iter = 0;
+    do
     {
         std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
-        const auto model_out = run_model (model, in_data);
-        std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
-    }
+        const auto model_out = run_model (model, in_data, true, 4);
+        std::cout << "Prune " << iter << " MSE: " << compute_mse (model_out, target_data) << '\n';
 
-    {
-        const auto ranking = Ranking::Min_Weights;
-        // const auto ranking = Ranking::Mean_Activations;
-        // const auto ranking = Ranking::Minimization;
-        auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
-        std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+        static constexpr auto n_prune = 4;
+        model_json = prune (model_json, pruning_candidates, n_prune * iter, n_prune);
 
-        static constexpr auto n_prune = 12;
-        model_json = prune (model_json, std::span { pruning_candidates }.subspan (0, n_prune));
-        std::cout << "Parameter count: " << count_params (model_json) << '\n';
-        Model model { model_json };
-        const auto model_out = run_model (model, in_data);
-        std::cout << "Prune 1 MSE: " << compute_mse (model_out, target_data) << '\n';
-    }
+        using namespace std::chrono_literals;
+        std::this_thread::sleep_for (1000ms);
+    } while (++iter <= 8);
 
     return 0;
 }
