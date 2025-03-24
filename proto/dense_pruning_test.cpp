@@ -13,7 +13,7 @@ static std::tuple<std::vector<float>, std::vector<float>> get_audio_data()
 
     // Or, use validation data
     // static constexpr int seek_offset = 1'500'000;
-    // static constexpr int num_samples = 5'000;
+    // static constexpr int num_samples = 500'000;
 
     std::vector<float> in_data (num_samples);
     std::vector<float> target_data (num_samples);
@@ -463,25 +463,27 @@ int main()
     // }
 
     // const auto ranking = Ranking::Min_Weights;
-    const auto ranking = Ranking::Mean_Activations;
-    // const auto ranking = Ranking::Minimization;
+    // const auto ranking = Ranking::Mean_Activations;
+    const auto ranking = Ranking::Minimization;
     auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
     std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+
+    using namespace std::chrono_literals;
+    std::this_thread::sleep_for (10'000ms);
 
     int iter = 0;
     do
     {
         std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
-        const auto model_out = run_model (model, in_data, true, 10);
+        const auto model_out = run_model (model, in_data, true, 4);
         std::cout << "Prune " << iter << " MSE: " << compute_mse (model_out, target_data) << '\n';
 
-        static constexpr auto n_prune = 28;
+        static constexpr auto n_prune = 24;
         model_json = prune (model_json, pruning_candidates, n_prune * iter, n_prune);
 
-        using namespace std::chrono_literals;
         std::this_thread::sleep_for (1000ms);
-    } while (++iter <= 8);
+    } while (++iter <= 15);
 
     return 0;
 }
