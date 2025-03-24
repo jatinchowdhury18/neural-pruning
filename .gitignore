@@ -6,3 +6,4 @@ build*/
 .raddbg_project
 
 *.wav
+.DS_Store
