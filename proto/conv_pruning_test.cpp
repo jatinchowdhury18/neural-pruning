@@ -130,11 +130,11 @@ static int count_params (const nlohmann::json& model_json)
     {
         for (auto& weights_matrix : layer["weights"])
         {
-            if (weights_matrix[0].is_array())
+            if (! weights_matrix.empty() && weights_matrix[0].is_array())
             {
                 for (auto& row : weights_matrix)
                 {
-                    if (row[0].is_array())
+                    if (! row.empty() && row[0].is_array())
                     {
                         for (auto& el : row)
                             count += el.size();
@@ -155,19 +155,27 @@ static int count_params (const nlohmann::json& model_json)
 }
 
 template <typename Model_Type>
-static std::vector<float> run_model (Model_Type& model, std::span<const float> input, bool verbose = true)
+static std::vector<float> run_model (Model_Type& model, std::span<const float> input, bool verbose = true, int num_iters = 1)
 {
     std::vector<float> out (input.size());
 
     const auto start = std::chrono::high_resolution_clock::now();
 
-    for (size_t n = 0; n < input.size(); ++n)
-        out[n] = model.forward (&input[n]);
+    for (int i = 0; i < num_iters; ++i)
+    {
+        for (size_t n = 0; n < input.size(); ++n)
+            out[n] = model.forward (&input[n]);
+    }
 
     const auto duration = std::chrono::high_resolution_clock::now() - start;
     const auto test_duration_seconds = std::chrono::duration<float> { duration }.count();
     if (verbose)
+    {
         std::cout << "Inference Time: " << test_duration_seconds << " seconds" << std::endl;
+        const auto audio_time = (float) (input.size() * num_iters) / 96'000.0f;
+        const auto real_time_factor = audio_time / test_duration_seconds;
+        std::cout << "Real-Time Factor: " << real_time_factor << std::endl;
+    }
 
     return out;
 }
@@ -180,11 +188,13 @@ struct Pruning_Candidate
 };
 
 static nlohmann::json prune (nlohmann::json model_json,
-                             std::span<Pruning_Candidate> candidates_to_prune)
+                             std::span<Pruning_Candidate> candidates_to_prune,
+                             int start,
+                             int num)
 {
-    std::cout << "Pruning " << candidates_to_prune.size() << " structural elements...\n";
+    std::cout << "Pruning " << num << " structural elements...\n";
 
-    for (int prune_idx = 0; prune_idx < candidates_to_prune.size(); ++prune_idx)
+    for (int prune_idx = start; prune_idx < start + num; ++prune_idx)
     {
         const auto& to_prune = candidates_to_prune[prune_idx];
 
@@ -398,32 +408,40 @@ static auto rank_pruning_candidates (nlohmann::json model_json, Ranking ranking,
 
 int main()
 {
-    std::cout << "Dense network pruning test\n";
+    std::cout << "Conv. network pruning test\n";
 
     const auto [in_data, target_data] = get_audio_data();
     auto model_json = get_model_json();
 
+    // {
+    //     std::cout << "Parameter count: " << count_params (model_json) << '\n';
+    //     Model model { model_json };
+    //     const auto model_out = run_model (model, in_data);
+    //     std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
+    // }
+
+    // const auto ranking = Ranking::Min_Weights;
+    // const auto ranking = Ranking::Mean_Activations;
+    const auto ranking = Ranking::Minimization;
+    auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
+    std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+
+    using namespace std::chrono_literals;
+    std::this_thread::sleep_for (10'000ms);
+
+    int iter = 0;
+    do
     {
         std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
-        const auto model_out = run_model (model, in_data);
-        std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
-    }
+        const auto model_out = run_model (model, in_data, true, 5);
+        std::cout << "Prune " << iter << " MSE: " << compute_mse (model_out, target_data) << '\n';
 
-    {
-        // const auto ranking = Ranking::Min_Weights;
-        const auto ranking = Ranking::Mean_Activations;
-        // const auto ranking = Ranking::Minimization;
-        auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
-        std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+        static constexpr auto n_prune = 6;
+        model_json = prune (model_json, pruning_candidates, n_prune * iter, n_prune);
 
-        static constexpr auto n_prune = 32;
-        model_json = prune (model_json, std::span { pruning_candidates }.subspan (0, n_prune));
-        std::cout << "Parameter count: " << count_params (model_json) << '\n';
-        Model model { model_json };
-        const auto model_out = run_model (model, in_data);
-        std::cout << "Prune 1 MSE: " << compute_mse (model_out, target_data) << '\n';
-    }
+        std::this_thread::sleep_for (1'000ms);
+    } while (++iter <= 9);
 
     return 0;
 }

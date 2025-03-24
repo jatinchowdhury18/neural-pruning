@@ -13,7 +13,7 @@ static std::tuple<std::vector<float>, std::vector<float>> get_audio_data()
 
     // Or, use validation data
     // static constexpr int seek_offset = 1'500'000;
-    // static constexpr int num_samples = 500'000;
+    // static constexpr int num_samples = 5'000;
 
     std::vector<float> in_data (num_samples);
     std::vector<float> target_data (num_samples);
@@ -133,19 +133,27 @@ static int count_params (const nlohmann::json& model_json)
 }
 
 template <typename Model_Type>
-static std::vector<float> run_model (Model_Type& model, std::span<const float> input, bool verbose = true)
+static std::vector<float> run_model (Model_Type& model, std::span<const float> input, bool verbose = true, int num_iters = 1)
 {
     std::vector<float> out (input.size());
 
     const auto start = std::chrono::high_resolution_clock::now();
 
-    for (size_t n = 0; n < input.size(); ++n)
-        out[n] = model.forward (&input[n]);
+    for (int i = 0; i < num_iters; ++i)
+    {
+        for (size_t n = 0; n < input.size(); ++n)
+            out[n] = model.forward (&input[n]);
+    }
 
     const auto duration = std::chrono::high_resolution_clock::now() - start;
     const auto test_duration_seconds = std::chrono::duration<float> { duration }.count();
     if (verbose)
+    {
         std::cout << "Inference Time: " << test_duration_seconds << " seconds" << std::endl;
+        const auto audio_time = (float) (input.size() * num_iters) / 96'000.0f;
+        const auto real_time_factor = audio_time / test_duration_seconds;
+        std::cout << "Real-Time Factor: " << real_time_factor << std::endl;
+    }
 
     return out;
 }
@@ -159,20 +167,26 @@ struct Pruning_Candidate
 };
 
 static nlohmann::json prune (nlohmann::json model_json,
-                             std::span<Pruning_Candidate> candidates_to_prune)
+                             std::span<Pruning_Candidate> candidates_to_prune,
+                             int start,
+                             int num)
 {
-    std::cout << "Pruning " << candidates_to_prune.size() << " structural elements...\n";
-
-    for (int prune_idx = 0; prune_idx < candidates_to_prune.size(); ++prune_idx)
+    int count = 0;
+    for (int prune_idx = start; prune_idx < start + num; ++prune_idx)
     {
-        const auto& to_prune = candidates_to_prune[prune_idx];
+        auto& to_prune = candidates_to_prune[prune_idx];
         const auto erase_row = [&] (int layer_idx, int row_idx)
         {
             for (int fix_idx = prune_idx; fix_idx < candidates_to_prune.size(); ++fix_idx)
             {
                 auto& to_fix = candidates_to_prune[fix_idx];
-                if (to_fix.layer == layer_idx && to_fix.row > row_idx)
-                    to_fix.row--;
+                if (to_fix.layer == layer_idx)
+                {
+                    if (to_fix.row == row_idx)
+                        to_fix.row = -1;
+                    if (to_fix.row > row_idx)
+                        to_fix.row--;
+                }
             }
         };
 
@@ -181,16 +195,21 @@ static nlohmann::json prune (nlohmann::json model_json,
             for (int fix_idx = prune_idx; fix_idx < candidates_to_prune.size(); ++fix_idx)
             {
                 auto& to_fix = candidates_to_prune[fix_idx];
-                if (to_fix.layer == layer_idx && to_fix.column > col_idx)
-                    to_fix.column--;
+                if (to_fix.layer == layer_idx)
+                {
+                    if (to_fix.column == col_idx)
+                        to_fix.column = -1;
+
+                    if (to_fix.column > col_idx)
+                        to_fix.column--;
+                }
             }
         };
 
         auto& layers = model_json["layers"];
         for (int layer_idx = 0; layer_idx < layers.size(); ++layer_idx)
         {
-            auto& layer = layers.at (layer_idx);
-            if (layer["type"] == "activation")
+            if (layers.at (layer_idx)["type"] == "activation")
                 continue;
 
             // Convention:
@@ -199,17 +218,28 @@ static nlohmann::json prune (nlohmann::json model_json,
 
             if (to_prune.layer == layer_idx)
             {
+                if (to_prune.column >= 0) // pruning a column
+                {
+                    to_prune.layer -= 2;
+                    to_prune.row = to_prune.column;
+                    if (to_prune.layer < 0)
+                        break;
+                }
+
                 if (to_prune.row >= 0) // pruning a row
                 {
+                    auto& layer = layers.at (to_prune.layer);
                     auto& weights = layer["weights"].at (0);
                     auto& biases = layer["weights"].at (1);
+
+                    if (weights[0].size() <= 1)
+                        break;
+
                     for (auto& w : weights)
                         w.erase (to_prune.row);
-                    erase_row (layer_idx, to_prune.row);
                     biases.erase (to_prune.row);
-                    layer["shape"].back() = layer["shape"].back().get<int>() - 1;
 
-                    auto next_layer_idx = layer_idx + 2;
+                    auto next_layer_idx = to_prune.layer + 2;
                     if (next_layer_idx < layers.size())
                     {
                         auto& next_layer = layers.at (next_layer_idx);
@@ -217,31 +247,19 @@ static nlohmann::json prune (nlohmann::json model_json,
                         next_weights.erase (to_prune.row);
                         erase_col (next_layer_idx, to_prune.row);
                     }
-                }
-                else if (to_prune.column >= 0) // pruning a column
-                {
-                    auto prev_layer_idx = layer_idx - 2;
-                    if (prev_layer_idx >= 0)
-                    {
-                        auto& prev_layer = layers.at (prev_layer_idx);
-                        auto& weights = prev_layer["weights"].at (0);
-                        auto& biases = prev_layer["weights"].at (1);
-                        for (auto& w : weights)
-                            w.erase (to_prune.column);
-                        erase_row (prev_layer_idx, to_prune.column);
-                        biases.erase (to_prune.column);
-                        prev_layer["shape"].back() = prev_layer["shape"].back().get<int>() - 1;
-                    }
 
-                    auto& weights = layer["weights"].at (0);
-                    weights.erase (to_prune.column);
-                    erase_col (layer_idx, to_prune.column);
+                    erase_row (to_prune.layer, to_prune.row);
+                    layer["shape"].back() = layer["shape"].back().get<int>() - 1;
+
+                    count++;
                 }
 
                 break;
             }
         }
     }
+
+    std::cout << "Pruning " << count << " structural elements...\n";
 
     return model_json;
 }
@@ -437,27 +455,33 @@ int main()
     const auto [in_data, target_data] = get_audio_data();
     auto model_json = get_model_json();
 
+    // {
+    //     std::cout << "Parameter count: " << count_params (model_json) << '\n';
+    //     Model model { model_json };
+    //     const auto model_out = run_model (model, in_data);
+    //     std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
+    // }
+
+    // const auto ranking = Ranking::Min_Weights;
+    const auto ranking = Ranking::Mean_Activations;
+    // const auto ranking = Ranking::Minimization;
+    auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
+    std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+
+    int iter = 0;
+    do
     {
         std::cout << "Parameter count: " << count_params (model_json) << '\n';
         Model model { model_json };
-        const auto model_out = run_model (model, in_data);
-        std::cout << "Post-Training MSE: " << compute_mse (model_out, target_data) << '\n';
-    }
+        const auto model_out = run_model (model, in_data, true, 10);
+        std::cout << "Prune " << iter << " MSE: " << compute_mse (model_out, target_data) << '\n';
 
-    {
-        const auto ranking = Ranking::Min_Weights;
-        // const auto ranking = Ranking::Mean_Activations;
-        // const auto ranking = Ranking::Minimization;
-        auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
-        std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+        static constexpr auto n_prune = 28;
+        model_json = prune (model_json, pruning_candidates, n_prune * iter, n_prune);
 
-        static constexpr auto n_prune = 96;
-        model_json = prune (model_json, std::span { pruning_candidates }.subspan (0, n_prune));
-        std::cout << "Parameter count: " << count_params (model_json) << '\n';
-        Model model { model_json };
-        const auto model_out = run_model (model, in_data);
-        std::cout << "Prune 1 MSE: " << compute_mse (model_out, target_data) << '\n';
-    }
+        using namespace std::chrono_literals;
+        std::this_thread::sleep_for (1000ms);
+    } while (++iter <= 8);
 
     return 0;
 }
