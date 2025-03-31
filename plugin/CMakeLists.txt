@@ -1,6 +1,6 @@
 CPMAddPackage("gh:juce-framework/juce#8.0.5")
-CPMAddPackage("gh:Chowdhury-DSP/chowdsp_utils#next")
-CPMAddPackage("gh:free-audio/clap-juce-extensions#main")
+CPMAddPackage("gh:Chowdhury-DSP/chowdsp_utils#07f8a5b049eaa9844defdab8c13e4763d0105502")
+CPMAddPackage("gh:free-audio/clap-juce-extensions#ea834dfd366ab2103b98e92eaacb581c69fc2e0b")
 
 juce_add_plugin(neural_pruning_plugin
     COMPANY_NAME chowdsp
@@ -31,7 +31,7 @@ target_compile_definitions(neural_pruning_plugin PUBLIC
     JUCE_MODAL_LOOPS_PERMITTED=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     CHOWDSP_BUFFER_MAX_NUM_CHANNELS=2
-    MODELS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../models"
+    MODELS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../train"
 )
 
 target_link_libraries(neural_pruning_plugin
@@ -44,13 +44,13 @@ target_link_libraries(neural_pruning_plugin
         chowdsp::chowdsp_gui
         chowdsp::chowdsp_buffers
         chowdsp::chowdsp_filters
+        chowdsp::chowdsp_dsp_utils
         chowdsp::chowdsp_clap_extensions
         clap_juce_extensions
         RTNeural
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags
 )
 
 include(SourceFileGroup)
@@ -75,5 +75,5 @@ set_source_files_properties(${juce_module_sources}
 set_target_properties(neural_pruning_plugin PROPERTIES
     UNITY_BUILD ON
     UNITY_BUILD_MODE GROUP
-    UNITY_BUILD_BATCH_SIZE 8
+    UNITY_BUILD_BATCH_SIZE 16
 )

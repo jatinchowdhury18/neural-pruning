@@ -156,8 +156,6 @@ struct Model
             },
             model_variant);
     }
-
-    void process (std::span<float> data, float param);
 };
 
 static int count_params (const nlohmann::json& model_json)
@@ -452,6 +450,13 @@ int main()
     const auto ranking = Ranking::Minimization;
     auto pruning_candidates = rank_pruning_candidates (model_json, ranking, in_data, target_data);
     std::cout << "# Pruning Candidates: " << pruning_candidates.size() << '\n';
+
+    // export rankings for plugin...
+    // std::cout << "{ ";
+    // for (const auto& candidate : pruning_candidates)
+    //     std::cout << "{ " << candidate.idx << ", " << candidate.value << " }, ";
+    // std::cout << "}\n";
+    // return 0;
 
     int iter = 0;
     do
