@@ -1,3 +1,5 @@
+project(neural_pruning_plugin VERSION 1.0.0)
+
 CPMAddPackage("gh:juce-framework/juce#8.0.5")
 CPMAddPackage("gh:Chowdhury-DSP/chowdsp_utils#07f8a5b049eaa9844defdab8c13e4763d0105502")
 CPMAddPackage("gh:free-audio/clap-juce-extensions#ea834dfd366ab2103b98e92eaacb581c69fc2e0b")
@@ -9,7 +11,6 @@ juce_add_plugin(neural_pruning_plugin
     FORMATS AU VST3 Standalone
     PRODUCT_NAME "Neural Pruning Plugin"
     BUNDLE_ID "org.chowdsp.neural-pruning-plugin"
-    VERSION 0.0.0
 
     MICROPHONE_PERMISSION_ENABLED TRUE
 )
@@ -77,3 +78,12 @@ set_target_properties(neural_pruning_plugin PROPERTIES
     UNITY_BUILD_MODE GROUP
     UNITY_BUILD_BATCH_SIZE 16
 )
+
+if(OSX_SIGNING_ID)
+    message(STATUS "Setting up code-signing with ID: ${OSX_SIGNING_ID}")
+    include(CodeSign)
+    sign_plugin(neural_pruning_plugin ${OSX_SIGNING_ID})
+endif()
+
+include(Package)
+package_plugin(neural_pruning_plugin)
